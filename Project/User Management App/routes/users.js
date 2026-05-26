@@ -1,8 +1,12 @@
 var express = require('express');
 var router = express.Router();
 var db = require('../db');
-var helpers = require('../helpers');
-var errors = [];
+
+const validator = require('validator');
+const bcrypt = require('bcrypt');
+const jwt = require('jsonwebtoken');
+
+const JWT_SECRET = 'your-secret-key';
 
 router.get('/register', function (req, res, next) {
   res.render('register', {
@@ -10,15 +14,32 @@ router.get('/register', function (req, res, next) {
   });
 });
 
-router.post('/register', function (req, res, next) {
-  var sqlQuery = "INSERT INTO users VALUES(NULL, ?, MD5(?), ?)";
-  var values = [req.body.email, req.body.psw, req.body.fname];
+router.post('/register', async function (req, res, next) {
+  const email = req.body.email;
+  const password = req.body.psw;
+  const name = req.body.fname;
+
+  if (!email || !password || !name) {
+    return res.status(400).send("All fields are required");
+  }
+
+  if (!validator.isEmail(email)) {
+    return res.status(400).send("Invalid email address");
+  }
+
+  if (password.length < 6) {
+    return res.status(400).send("Password must be at least 6 characters");
+  }
+
+  const hashedPassword = await bcrypt.hash(password, 10);
+
+  var sqlQuery = "INSERT INTO users VALUES(NULL, ?, ?, ?)";
+  var values = [email, hashedPassword, name];
 
   db.query(sqlQuery, values, function (err, results, fields) {
     if (err) {
       console.log(err.message);
-      res.send("Register Error: " + err.message);
-      return;
+      return res.send("Register Error: " + err.message);
     }
 
     res.redirect('/login');
@@ -32,20 +53,45 @@ router.get('/login', function (req, res, next) {
 });
 
 router.post('/login', function (req, res, next) {
-  var sqlQuery = "SELECT * FROM users WHERE user_email = ? AND user_pass = MD5(?)";
-  var values = [req.body.email, req.body.psw];
+  const email = req.body.email;
+  const password = req.body.psw;
 
-  db.query(sqlQuery, values, function (err, results, fields) {
+  if (!email || !password) {
+    return res.status(400).send("Email and password are required");
+  }
+
+  if (!validator.isEmail(email)) {
+    return res.status(400).send("Invalid email address");
+  }
+
+  var sqlQuery = "SELECT * FROM users WHERE user_email = ?";
+  var values = [email];
+
+  db.query(sqlQuery, values, async function (err, results, fields) {
     if (err) {
       console.log(err.message);
-      res.send("Login Error: " + err.message);
-      return;
+      return res.send("Login Error: " + err.message);
     }
 
     if (results.length == 1) {
-      req.session.authorised = true;
-      req.session.fname = results[0].user_fname;
-      res.redirect('/');
+      const isMatch = await bcrypt.compare(password, results[0].user_pass);
+
+      if (isMatch) {
+        req.session.authorised = true;
+        req.session.fname = results[0].user_fname;
+
+        const token = jwt.sign(
+          { id: results[0].user_id, email: results[0].user_email },
+          JWT_SECRET,
+          { expiresIn: '1h' }
+        );
+
+        console.log("JWT Token:", token);
+
+        res.redirect('/');
+      } else {
+        res.send("Invalid email or password");
+      }
     } else {
       res.send("Invalid email or password");
     }
